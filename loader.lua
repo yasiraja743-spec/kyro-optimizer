@@ -30,7 +30,7 @@ local CONFIG = {
 
     -- Anti-Hit activation
     ANTIHIT_DURATION    = 3.0,    -- status toast + cooldown, in seconds (the route itself takes ~0.1s)
-    ROUTE_TRIGGER       = "egg",  -- "egg": run after the Egg Tool is in your hand | "prompt": run right after the prompt
+    ROUTE_TRIGGER       = "prompt", -- "prompt": run right after a prompt is pressed (same as Virex) | "egg": wait for the Egg Tool first
     ROUTE_STEP_DELAY    = 0.005,  -- wait between teleport points (Virex ANTI_HIT_SPEED)
     ROUTE_POINTS = {              -- Virex route; map-specific, update if the game moves things
         Vector3.new(500.62, 241.28, -366.64),
@@ -50,9 +50,9 @@ local CONFIG = {
     STEAL_WORDS   = { "steal", "stolen", "curi" },
     ACTION_WORDS  = { "grab", "take", "pick", "claim", "ambil" },
     EGG_WORDS     = { "egg", "telur", "huevo" },
-    -- true: only prompts that look like "steal egg" arm the sequence.
-    -- false: ANY prompt arms it (like the Virex reference); the new Egg Tool is then the only check.
-    REQUIRE_STEAL_PROMPT = true,
+    -- true: only prompts that look like "steal egg" arm Anti-Hit.
+    -- false: ANY prompt you press arms it (exactly like the Virex source).
+    REQUIRE_STEAL_PROMPT = false,
     EXCLUDE_WORDS = { "sell", "buy", "hatch", "place", "shop", "purchase" },
 
     DEBUG = false,
@@ -137,16 +137,16 @@ local J = Janitor.new()
 ------------------------------------------------------------------------------------------
 local C = {
     bg     = Color3.fromRGB(9, 12, 18),
-    panel  = Color3.fromRGB(17, 22, 32),
-    panel2 = Color3.fromRGB(28, 35, 50),
-    rowOn  = Color3.fromRGB(14, 36, 50),
-    stroke = Color3.fromRGB(44, 56, 78),
+    panel  = Color3.fromRGB(30, 40, 60),
+    panel2 = Color3.fromRGB(44, 56, 80),
+    rowOn  = Color3.fromRGB(16, 56, 76),
+    stroke = Color3.fromRGB(62, 78, 108),
     cyan   = Color3.fromRGB(0, 229, 255),
     blue   = Color3.fromRGB(41, 121, 255),
     trackOn = Color3.fromRGB(0, 140, 190),
-    white  = Color3.fromRGB(240, 246, 252),
-    muted  = Color3.fromRGB(140, 152, 172),
-    dim    = Color3.fromRGB(96, 108, 128),
+    white  = Color3.fromRGB(245, 249, 253),
+    muted  = Color3.fromRGB(176, 188, 208),
+    dim    = Color3.fromRGB(128, 142, 166),
 }
 
 local function make(className, props, parent)
@@ -303,6 +303,7 @@ end
 local states = { fps = false, low = false, high = false, black = false, antihit = false }
 local ui = {}                 -- filled by the UI section (ui.refresh)
 local Graphics, Overlay, AntiHit
+local cleanup                 -- defined at the bottom; stops everything and restores settings
 
 local function setFeature(key, value)
     value = value and true or false
@@ -420,7 +421,12 @@ do
         end
         -- Effects the game adds later while the mode is on.
         watch:Add(Lighting.DescendantAdded:Connect(function(obj)
-            if isAny(obj, POST) then task.defer(setTracked, effectBase, obj, false) end
+            if isAny(obj, POST) then
+                local token = scanToken
+                task.defer(function()
+                    if token == scanToken then setTracked(effectBase, obj, false) end
+                end)
+            end
         end))
     end
 
@@ -436,7 +442,12 @@ do
             end
         end)
         watch:Add(workspace.DescendantAdded:Connect(function(obj)
-            if isAny(obj, PARTICLES) then task.defer(setTracked, particleBase, obj, false) end
+            if isAny(obj, PARTICLES) then
+                local token = scanToken
+                task.defer(function()
+                    if token == scanToken then setTracked(particleBase, obj, false) end
+                end)
+            end
         end))
     end
 
@@ -689,7 +700,7 @@ do
         local t0 = os.clock()
         local byPrompt = (mode == "prompt")
 
-        ah.status.Text = byPrompt and "STEAL DETECTED • ACTIVATING" or "EGG DETECTED • ACTIVATING"
+        ah.status.Text = byPrompt and "ANTI-HIT • ACTIVATING" or "EGG DETECTED • ACTIVATING"
         ah.status.TextColor3 = C.cyan
         ah.fill.Size = UDim2.fromScale(0, 1)
         ah.popScale.Scale = 0.9
@@ -711,7 +722,7 @@ do
         tween(ah.fill, progress, { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 
         if not waitUntil(t0 + fadeIn + progress, id) then return end
-        ah.status.Text = byPrompt and "STEAL DONE • KYRO ACTIVE" or "EGG PICKUP DETECTED • KYRO ACTIVE"
+        ah.status.Text = byPrompt and "ANTI-HIT DONE • KYRO ACTIVE" or "EGG PICKUP DETECTED • KYRO ACTIVE"
         ah.status.TextColor3 = C.white
         tween(ah.status, 0.35, { TextColor3 = C.cyan })
         setStatus("ACTIVE", "active")
@@ -730,7 +741,7 @@ do
         snapshot = {}
         animId = animId + 1
         local id = animId
-        setStatus(mode == "prompt" and "STEAL DETECTED" or "EGG DETECTED", "active")
+        setStatus(mode == "prompt" and "ROUTE RUNNING" or "EGG DETECTED", "active")
         task.spawn(function()
             local ok, err = pcall(play, id, mode)
             if not ok then dbg("anti-hit animation error:", err) end
@@ -886,8 +897,7 @@ local main = make("CanvasGroup", {
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromOffset(400, 300),
     Size = UDim2.fromOffset(320, 360),
-    BackgroundColor3 = C.bg,
-    BackgroundTransparency = 0.06,
+    BackgroundTransparency = 1,
     GroupTransparency = 1,
     Visible = false,
     ZIndex = 100,
@@ -898,8 +908,21 @@ local mainGrad = cyanGradient(mainStroke, 0)
 loopTween(mainGrad, TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1), { Rotation = 360 })
 local mainScale = make("UIScale", { Scale = 1 }, main)
 
--- soft inner glow
+-- background (gradient lives on a plain Frame, NOT on the CanvasGroup) + soft inner glow
 do
+    local bgFill = make("Frame", {
+        Name = "Background",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0,
+        BorderSizePixel = 0,
+        Active = false,
+    }, main)
+    corner(bgFill, 18)
+    make("UIGradient", {
+        Color = ColorSequence.new(Color3.fromRGB(34, 46, 70), Color3.fromRGB(16, 22, 36)),
+        Rotation = 90,
+    }, bgFill)
     local glow = make("Frame", {
         Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1,
@@ -907,11 +930,8 @@ do
     }, main)
     corner(glow, 18)
     stroke(glow, C.cyan, 5, 0.88)
-    make("UIGradient", {
-        Color = ColorSequence.new(Color3.fromRGB(22, 30, 46), Color3.fromRGB(8, 10, 16)),
-        Rotation = 90,
-    }, main)
 end
+
 
 -- Header (also the drag handle for the panel)
 local header = make("Frame", {
@@ -1115,11 +1135,69 @@ createRow("high", "High Graphics", "Best quality your device supports", 3)
 createRow("black", "Turn Off 3D Rendering", "Black overlay only; GPU still renders", 4)
 createRow("antihit", "Anti-Hit Route", "After egg steal: teleport along saved route", 5)
 
+-- Unload: one tap stops the script, restores every setting and removes the UI + logo button.
+do
+    local RED = Color3.fromRGB(255, 96, 104)
+    local row = make("TextButton", {
+        Name = "unload",
+        Size = UDim2.new(1, 0, 0, 54),
+        BackgroundColor3 = Color3.fromRGB(48, 24, 32),
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        LayoutOrder = 99,
+    }, scroll)
+    corner(row, 12)
+    stroke(row, RED, 1, 0.5)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(14, 8),
+        Size = UDim2.new(1, -92, 0, 18),
+        BackgroundTransparency = 1,
+        Text = "Unload Script",
+        TextColor3 = C.white,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(14, 28),
+        Size = UDim2.new(1, -92, 0, 16),
+        BackgroundTransparency = 1,
+        Text = "Stop Kyro and restore all settings",
+        TextColor3 = C.muted,
+        TextSize = 10,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    local pill = make("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -10, 0.5, 0),
+        Size = UDim2.fromOffset(64, 26),
+        BackgroundColor3 = Color3.fromRGB(170, 44, 58),
+        BorderSizePixel = 0,
+    }, row)
+    corner(pill, 13)
+    make("TextLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Text = "UNLOAD",
+        TextColor3 = C.white,
+        TextSize = 10,
+        Font = Enum.Font.GothamBold,
+    }, pill)
+    row.Activated:Connect(function()
+        if cleanup then cleanup() end
+    end)
+end
+
 -- Footer
 make("TextLabel", {
     AnchorPoint = Vector2.new(0, 1),
     Position = UDim2.new(0, 14, 1, -6),
-    Size = UDim2.new(1, -90, 0, 18),
+    Size = UDim2.new(1, -28, 0, 18),
     BackgroundTransparency = 1,
     Text = "KYRO  •  STEAL AN EGG  •  v" .. CONFIG.VERSION,
     TextColor3 = C.dim,
@@ -1127,19 +1205,6 @@ make("TextLabel", {
     Font = Enum.Font.GothamMedium,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, main)
-local unloadBtn = make("TextButton", {
-    AnchorPoint = Vector2.new(1, 1),
-    Position = UDim2.new(1, -12, 1, -6),
-    Size = UDim2.fromOffset(62, 20),
-    BackgroundColor3 = C.panel2,
-    BackgroundTransparency = 0.2,
-    Text = "UNLOAD",
-    TextColor3 = C.muted,
-    TextSize = 9,
-    Font = Enum.Font.GothamBold,
-    AutoButtonColor = true,
-}, main)
-corner(unloadBtn, 7)
 
 ------------------------------------------------------------------------------------------
 -- UI STATE VISUALS
@@ -1201,9 +1266,9 @@ end
 local placed = false
 local function layout()
     local vp = getViewport()
-    local touch = isTouch()
-    local w = math.clamp(vp.X - 24, 250, touch and 300 or 340)
-    local h = math.clamp(math.floor(vp.Y * (touch and 0.8 or 0.7)), 250, touch and 340 or 450)
+    local touch = isTouch() or vp.Y < 520 or vp.X < 700
+    local w = math.clamp(vp.X - 24, 250, touch and 290 or 340)
+    local h = math.clamp(math.floor(vp.Y * (touch and 0.76 or 0.7)), 250, touch and 330 or 450)
     main.Size = UDim2.fromOffset(w, h)
     ah.root.Size = UDim2.fromOffset(math.clamp(vp.X - 24, 220, 300), 58)
     if not placed then
@@ -1298,7 +1363,7 @@ gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
 -- CLEANUP + BOOT
 ------------------------------------------------------------------------------------------
 local cleaned = false
-local function cleanup()
+cleanup = function()
     if cleaned then return end
     cleaned = true
     pcall(AntiHit.destroy)
@@ -1310,7 +1375,6 @@ local function cleanup()
 end
 env.KyroOptimizerCleanup = cleanup
 J:Add(gui.Destroying:Connect(cleanup))
-unloadBtn.Activated:Connect(cleanup)
 
 layout()
 ui.refresh()
