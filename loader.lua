@@ -8,9 +8,10 @@
     What it is NOT (read this):
       * The 3D overlay is a black frame drawn on top of the game. Roblox gives scripts no API
         to stop GPU rendering, so the GPU keeps rendering behind it.
-      * The Anti-Hit sequence is a VISUAL INDICATOR. Monster damage / hit detection is decided
-        by the game's server. A client script cannot make a player invulnerable, and this one
-        does not try to. Do not rely on it as protection.
+      * Anti-Hit does NOT make the player invulnerable. After a steal it teleports your character
+        along a saved route (CONFIG.ROUTE_POINTS, taken from the Virex source) so you leave the
+        area. Hits are decided by the game's server; if the server checks positions, the
+        teleports can be rejected, rubber-banded or flagged. Use at your own risk (Roblox ToS).
       * FPS gains depend on the device and the game. Nothing here guarantees higher FPS.
 
     Re-running the script is safe: the previous instance is cleaned up first.
@@ -28,7 +29,20 @@ local CONFIG = {
     LOGO_URL      = "",           -- 3) direct raw URL of kyro_logo.png; downloaded once into LOGO_FILE
 
     -- Anti-Hit activation
-    ANTIHIT_DURATION    = 3.0,    -- total animation time in seconds
+    ANTIHIT_DURATION    = 3.0,    -- status toast + cooldown, in seconds (the route itself takes ~0.1s)
+    ROUTE_TRIGGER       = "egg",  -- "egg": run after the Egg Tool is in your hand | "prompt": run right after the prompt
+    ROUTE_STEP_DELAY    = 0.005,  -- wait between teleport points (Virex ANTI_HIT_SPEED)
+    ROUTE_POINTS = {              -- Virex route; map-specific, update if the game moves things
+        Vector3.new(500.62, 241.28, -366.64),
+        Vector3.new(504.45, 155.80, -366.35),
+        Vector3.new(508.30, 70.28, -366.03),
+        Vector3.new(513.86, 70.28, -366.25),
+        Vector3.new(519.43, 70.28, -366.47),
+        Vector3.new(524.32, 70.28, -366.59),
+        Vector3.new(529.22, 70.28, -366.71),
+        Vector3.new(538.01, 70.28, -365.55),
+        Vector3.new(546.80, 70.28, -364.40),
+    },
     PICKUP_TIMEOUT      = 8,      -- seconds to wait for the Egg Tool after pressing the prompt
     ALSO_WATCH_BACKPACK = false,  -- true if the game puts the Egg in the Backpack instead of the Character
 
@@ -286,7 +300,7 @@ end
 ------------------------------------------------------------------------------------------
 -- FEATURE STATE
 ------------------------------------------------------------------------------------------
-local states = { fps = false, low = false, high = false, black = false, antihit = true }
+local states = { fps = false, low = false, high = false, black = false, antihit = false }
 local ui = {}                 -- filled by the UI section (ui.refresh)
 local Graphics, Overlay, AntiHit
 
@@ -498,109 +512,63 @@ do
 end
 
 ------------------------------------------------------------------------------------------
--- ANTI-HIT ACTIVATION VISUAL (Kyro identity)
+-- ANTI-HIT STATUS TOAST (small, top-center; does not cover the screen or block input)
 ------------------------------------------------------------------------------------------
 local ah = {}
 ah.root = make("CanvasGroup", {
-    Name = "AntiHitOverlay",
-    Size = UDim2.fromScale(1, 1),
-    BackgroundTransparency = 1,
+    Name = "AntiHitToast",
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0, 16),
+    Size = UDim2.fromOffset(300, 58),
+    BackgroundColor3 = C.bg,
+    BackgroundTransparency = 0.08,
     GroupTransparency = 1,
     Visible = false,
     ZIndex = 80,
 }, gui)
-make("Frame", {
-    Size = UDim2.fromScale(1, 1),
-    BackgroundColor3 = Color3.fromRGB(3, 5, 10),
-    BackgroundTransparency = 0.06,
-    BorderSizePixel = 0,
-}, ah.root)
-
-ah.card = make("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(300, 262),
-    BackgroundTransparency = 1,
-}, ah.root)
-ah.cardScale = make("UIScale", { Scale = 1 }, ah.card)
-
-ah.ringWrap = make("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0, 0),
-    Size = UDim2.fromOffset(116, 116),
-    BackgroundColor3 = C.panel,
-    BackgroundTransparency = 0.25,
-}, ah.card)
-corner(ah.ringWrap, 58)
-ah.ringStroke = stroke(ah.ringWrap, C.cyan, 2.5, 0.1)
-ah.logoScale = make("UIScale", { Scale = 1 }, ah.ringWrap)
-makeLogo(ah.ringWrap, {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(74, 74),
+corner(ah.root, 14)
+ah.stroke = stroke(ah.root, C.cyan, 1.5, 0.15)
+ah.popScale = make("UIScale", { Scale = 1 }, ah.root)
+makeLogo(ah.root, {
+    Position = UDim2.fromOffset(12, 10),
+    Size = UDim2.fromOffset(34, 34),
 })
-
-local ahTitle = make("TextLabel", {
-    Position = UDim2.fromOffset(0, 128),
-    Size = UDim2.new(1, 0, 0, 30),
-    BackgroundTransparency = 1,
-    Text = "KYRO OPTIMIZER",
-    TextColor3 = C.white,
-    TextSize = 25,
-    Font = Enum.Font.GothamBlack,
-}, ah.card)
-make("UIGradient", {
-    Color = ColorSequence.new(C.white, C.cyan),
-    Rotation = 0,
-}, ahTitle)
-
-make("TextLabel", {
-    Position = UDim2.fromOffset(0, 158),
-    Size = UDim2.new(1, 0, 0, 16),
-    BackgroundTransparency = 1,
-    Text = "STEAL AN EGG  -  ANTI-HIT SEQUENCE",
-    TextColor3 = C.muted,
-    TextSize = 10,
-    Font = Enum.Font.GothamMedium,
-}, ah.card)
-
 ah.status = make("TextLabel", {
-    Position = UDim2.fromOffset(0, 182),
-    Size = UDim2.new(1, 0, 0, 22),
+    Position = UDim2.fromOffset(56, 8),
+    Size = UDim2.new(1, -66, 0, 18),
     BackgroundTransparency = 1,
     Text = "EGG DETECTED • ACTIVATING",
     TextColor3 = C.cyan,
-    TextSize = 13,
+    TextSize = 10,
     Font = Enum.Font.GothamBold,
-}, ah.card)
-
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+}, ah.root)
+make("TextLabel", {
+    Position = UDim2.fromOffset(56, 27),
+    Size = UDim2.new(1, -66, 0, 14),
+    BackgroundTransparency = 1,
+    Text = "KYRO OPTIMIZER  •  STEAL AN EGG",
+    TextColor3 = C.muted,
+    TextSize = 9,
+    Font = Enum.Font.GothamMedium,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+}, ah.root)
 local ahTrack = make("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0, 214),
-    Size = UDim2.new(1, -30, 0, 8),
+    Position = UDim2.new(0, 12, 1, -9),
+    Size = UDim2.new(1, -24, 0, 4),
     BackgroundColor3 = C.panel2,
     BorderSizePixel = 0,
-}, ah.card)
-corner(ahTrack, 4)
-stroke(ahTrack, C.cyan, 1, 0.65)
+}, ah.root)
+corner(ahTrack, 2)
 ah.fill = make("Frame", {
     Size = UDim2.fromScale(0, 1),
     BackgroundColor3 = Color3.new(1, 1, 1),
     BorderSizePixel = 0,
 }, ahTrack)
-corner(ah.fill, 4)
+corner(ah.fill, 2)
 cyanGradient(ah.fill, 0)
-
-make("TextLabel", {
-    Position = UDim2.fromOffset(0, 232),
-    Size = UDim2.new(1, 0, 0, 24),
-    BackgroundTransparency = 1,
-    Text = "Visual indicator only. Damage rules are controlled by the game server.",
-    TextColor3 = C.dim,
-    TextSize = 9,
-    Font = Enum.Font.Gotham,
-    TextWrapped = true,
-}, ah.card)
 
 ------------------------------------------------------------------------------------------
 -- ANTI-HIT LOGIC
@@ -608,8 +576,8 @@ make("TextLabel", {
 ------------------------------------------------------------------------------------------
 AntiHit = {}
 do
-    local enabled = true
-    local busy = false          -- animation running
+    local enabled = false
+    local busy = false          -- toast/route running
     local pending = false       -- armed, waiting for the Egg Tool
     local pendingId = 0
     local animId = 0
@@ -696,30 +664,54 @@ do
         return id == animId
     end
 
-    local function play(id)
+    -- Virex route: teleport the character through ROUTE_POINTS, aborting on respawn/death/disable.
+    local function runRoute(id)
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then
+            dbg("route: no HumanoidRootPart")
+            return
+        end
+        for _, pos in ipairs(CONFIG.ROUTE_POINTS) do
+            if id ~= animId or not enabled or not root.Parent or player.Character ~= char then return end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health <= 0 then return end
+            local okSet = pcall(function() root.CFrame = CFrame.new(pos) end)
+            if not okSet then return end
+            task.wait(CONFIG.ROUTE_STEP_DELAY)
+        end
+    end
+
+    local function play(id, mode)
         local dur = math.max(CONFIG.ANTIHIT_DURATION, 1.5)
-        local fadeIn, fadeOut, hold = 0.3, 0.3, 0.25
+        local fadeIn, fadeOut, hold = 0.25, 0.3, 0.25
         local progress = dur - fadeIn - fadeOut - hold
         local t0 = os.clock()
+        local byPrompt = (mode == "prompt")
 
-        ah.status.Text = "EGG DETECTED • ACTIVATING"
+        ah.status.Text = byPrompt and "STEAL DETECTED • ACTIVATING" or "EGG DETECTED • ACTIVATING"
         ah.status.TextColor3 = C.cyan
         ah.fill.Size = UDim2.fromScale(0, 1)
-        ah.logoScale.Scale = 0.8
-        ah.ringStroke.Transparency = 0.1
+        ah.popScale.Scale = 0.9
+        ah.stroke.Transparency = 0.15
         ah.root.GroupTransparency = 1
         ah.root.Visible = true
 
         tween(ah.root, fadeIn, { GroupTransparency = 0 })
-        tween(ah.logoScale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
-        pulse = TweenService:Create(ah.ringStroke, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Transparency = 0.75 })
+        tween(ah.popScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+        pulse = TweenService:Create(ah.stroke, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Transparency = 0.7 })
         pulse:Play()
+
+        task.spawn(function()
+            local okRoute, errRoute = pcall(runRoute, id)
+            if not okRoute then dbg("route error:", errRoute) end
+        end)
 
         if not waitUntil(t0 + fadeIn, id) then return end
         tween(ah.fill, progress, { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 
         if not waitUntil(t0 + fadeIn + progress, id) then return end
-        ah.status.Text = "EGG PICKUP DETECTED • KYRO ACTIVE"
+        ah.status.Text = byPrompt and "STEAL DONE • KYRO ACTIVE" or "EGG PICKUP DETECTED • KYRO ACTIVE"
         ah.status.TextColor3 = C.white
         tween(ah.status, 0.35, { TextColor3 = C.cyan })
         setStatus("ACTIVE", "active")
@@ -729,7 +721,7 @@ do
         waitUntil(t0 + dur, id)
     end
 
-    local function start()
+    local function start(mode)
         if busy or not enabled then return end
         busy = true
         pending = false
@@ -738,9 +730,9 @@ do
         snapshot = {}
         animId = animId + 1
         local id = animId
-        setStatus("EGG DETECTED", "active")
+        setStatus(mode == "prompt" and "STEAL DETECTED" or "EGG DETECTED", "active")
         task.spawn(function()
-            local ok, err = pcall(play, id)
+            local ok, err = pcall(play, id, mode)
             if not ok then dbg("anti-hit animation error:", err) end
             if id == animId then -- not aborted meanwhile -> reset state
                 hideNow()
@@ -771,6 +763,11 @@ do
         end
         local char = player.Character
         if not char then return end
+
+        if CONFIG.ROUTE_TRIGGER == "prompt" then
+            start("prompt")
+            return
+        end
 
         snapshot = {}
         for _, c in ipairs(char:GetChildren()) do
@@ -1116,7 +1113,7 @@ createRow("fps", "FPS Boost", "Fewer effects, no shadows, no post-FX", 1)
 createRow("low", "Low Graphics", "Lowest quality, no particles/shadows", 2)
 createRow("high", "High Graphics", "Best quality your device supports", 3)
 createRow("black", "Turn Off 3D Rendering", "Black overlay only; GPU still renders", 4)
-createRow("antihit", "Anti-Hit Activation", "Egg pickup sequence (visual only)", 5)
+createRow("antihit", "Anti-Hit Route", "After egg steal: teleport along saved route", 5)
 
 -- Footer
 make("TextLabel", {
@@ -1147,7 +1144,7 @@ corner(unloadBtn, 7)
 ------------------------------------------------------------------------------------------
 -- UI STATE VISUALS
 ------------------------------------------------------------------------------------------
-local ahStatusText = "READY"
+local ahStatusText = "OFF"
 local activeCount = 0
 
 local function setRowVisual(r, on)
@@ -1208,7 +1205,7 @@ local function layout()
     local w = math.clamp(vp.X - 24, 250, touch and 300 or 340)
     local h = math.clamp(math.floor(vp.Y * (touch and 0.8 or 0.7)), 250, touch and 340 or 450)
     main.Size = UDim2.fromOffset(w, h)
-    ah.cardScale.Scale = math.clamp(math.min((vp.X - 24) / 300, (vp.Y - 24) / 262), 0.5, 1)
+    ah.root.Size = UDim2.fromOffset(math.clamp(vp.X - 24, 220, 300), 58)
     if not placed then
         placed = true
         icon.Position = UDim2.fromOffset(46, vp.Y * 0.4)
